@@ -1,0 +1,59 @@
+name: Build Nomad (Musl)
+
+on:
+  schedule:
+  - cron: '0 0 * * *'
+  workflow_dispatch:
+
+env:
+  TARGETS: linux_amd64
+
+jobs:
+  version:
+    name: Retrieve Version Info
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.fetch_info.outputs.latest_tag }}
+      info: ${{ steps.fetch_info.outputs.tag_info }}
+    steps:
+      - name: Get Latest Tag
+        id: fetch_info
+        run: |
+          data=$(curl -sL https://api.github.com/repos/hashicorp/nomad/releases/latest)
+          LATEST_TAG="$(echo "${data}" | jq -r '.tag_name')"
+          echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+  build-musl:
+    name: Build Musl Binary
+    runs-on: ubuntu-latest
+    permissions: write-all
+    needs: version
+    steps:
+      - id: cache
+        name: Check For Cached Binary
+        uses: actions/cache@v4
+        with:
+          key: ${{ env.TARGETS }}-${{ needs.version.outputs.tag }}
+          path: nomad/pkg/linux_amd64/nomad
+      - id: build-binary
+        uses: addnab/docker-run-action@v3
+        name: Use Docker to Build Musl Binary
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          options: '-v ${{ github.workspace }}:/work -e TARGETS=${{ env.TARGETS }}'
+          image: alpine:edge
+          run: |
+            apk add git zip linux-headers bash make go
+            git clone --depth=1 --branch=${{ needs.version.outputs.tag }} https://github.com/hashicorp/nomad /work/nomad
+            cd /work/nomad && make release
+      - id: create-release
+        name: Create Release For Artifact
+        if: steps.build-binary.outcome == 'success'
+        uses: softprops/action-gh-release@v2.0.8
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Nomad ${{ needs.version.outputs.tag }}
+          body: Check the release notes of the [related nomad release](https://github.com/hashicorp/nomad/releases/tag/${{ needs.version.outputs.tag }}).
+          files: nomad/pkg/linux_amd64.zip
+          make_latest: true
+          prerelease: false
+          draft: false
